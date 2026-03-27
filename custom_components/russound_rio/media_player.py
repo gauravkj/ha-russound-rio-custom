@@ -29,7 +29,6 @@ from .const import DOMAIN, RUSSOUND_MEDIA_TYPE_PRESET, SELECT_SOURCE_DELAY
 from .entity import RussoundBaseEntity, command
 
 _LOGGER = logging.getLogger(__name__)
-raise Exception("CUSTOM RUSSOUND MEDIA_PLAYER LOADED")
 
 PARALLEL_UPDATES = 0
 

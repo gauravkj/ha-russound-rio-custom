@@ -57,6 +57,12 @@ It currently focuses on improved multizone support and additional entity exposur
 - Favorites and automation oriented services
 - Expanded Russound source side support
 
+- ## HACS
+
+This repository can be added to HACS as a custom repository.
+
+Category: Integration
+
 ## Credits
 - Russound
 - `aiorussound` maintainers and contributors

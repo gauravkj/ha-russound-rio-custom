@@ -1,1 +1,1 @@
-# ha-russound-rio-custom
+# HA Russound RIO Enhanced

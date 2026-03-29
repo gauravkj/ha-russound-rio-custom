@@ -27,7 +27,7 @@ class RussoundZoneNumberEntityDescription(NumberEntityDescription):
 CONTROL_ENTITIES: tuple[RussoundZoneNumberEntityDescription, ...] = (
     RussoundZoneNumberEntityDescription(
         key="balance",
-        translation_key="balance",
+        name="Balance",
         native_min_value=-10,
         native_max_value=10,
         native_step=1,
@@ -37,7 +37,7 @@ CONTROL_ENTITIES: tuple[RussoundZoneNumberEntityDescription, ...] = (
     ),
     RussoundZoneNumberEntityDescription(
         key="bass",
-        translation_key="bass",
+        name="Bass",
         native_min_value=-10,
         native_max_value=10,
         native_step=1,
@@ -47,7 +47,7 @@ CONTROL_ENTITIES: tuple[RussoundZoneNumberEntityDescription, ...] = (
     ),
     RussoundZoneNumberEntityDescription(
         key="treble",
-        translation_key="treble",
+        name="Treble",
         native_min_value=-10,
         native_max_value=10,
         native_step=1,
@@ -57,7 +57,7 @@ CONTROL_ENTITIES: tuple[RussoundZoneNumberEntityDescription, ...] = (
     ),
     RussoundZoneNumberEntityDescription(
         key="turn_on_volume",
-        translation_key="turn_on_volume",
+        name="Startup Volume",
         native_min_value=0,
         native_max_value=100,
         native_step=2,
@@ -97,6 +97,8 @@ class RussoundNumberEntity(RussoundBaseEntity, NumberEntity):
         """Initialize a Russound number entity."""
         super().__init__(controller, zone_id)
         self.entity_description = description
+        self._attr_has_entity_name = True
+        self._attr_name = description.name
         self._attr_unique_id = (
             f"{self._primary_mac_address}-{self._zone.device_str}-{description.key}"
         )

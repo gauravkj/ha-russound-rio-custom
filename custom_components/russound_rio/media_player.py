@@ -42,49 +42,13 @@ async def async_setup_entry(
     client = entry.runtime_data
     sources = client.sources
 
-    _LOGGER.warning("Russound setup start")
-    _LOGGER.warning("Russound client object: %r", client)
-    _LOGGER.warning("Russound sources raw: %r", sources)
-    _LOGGER.warning(
-        "Russound sources keys: %s",
-        list(sources.keys()) if sources else [],
-    )
-    _LOGGER.warning("Russound controllers raw: %r", client.controllers)
-    _LOGGER.warning(
-        "Russound controller ids: %s",
-        list(client.controllers.keys()) if client.controllers else [],
-    )
-    _LOGGER.warning(
-        "Russound controller count: %s",
-        len(client.controllers) if client.controllers else 0,
-    )
-
     entities: list[RussoundZoneDevice] = []
 
-    for controller_id, controller in client.controllers.items():
+    for controller in client.controllers.values():
         zones = list(controller.zones) if controller.zones else []
-        _LOGGER.warning(
-            "Russound controller %s object: %r", controller_id, controller
-        )
-        _LOGGER.warning(
-            "Russound controller %s zones raw: %r", controller_id, controller.zones
-        )
-        _LOGGER.warning(
-            "Russound controller %s zones list: %s", controller_id, zones
-        )
-        _LOGGER.warning(
-            "Russound controller %s zone count: %s", controller_id, len(zones)
-        )
-
         for zone_id in zones:
-            _LOGGER.warning(
-                "Russound creating entity for controller=%s zone_id=%s",
-                controller_id,
-                zone_id,
-            )
             entities.append(RussoundZoneDevice(controller, zone_id, sources))
 
-    _LOGGER.warning("Russound total entities created: %s", len(entities))
     async_add_entities(entities)
 
 
@@ -125,14 +89,6 @@ class RussoundZoneDevice(RussoundBaseEntity, MediaPlayerEntity):
         _zone = self._zone
         self._sources = sources
         self._attr_unique_id = f"{self._primary_mac_address}-{_zone.device_str}"
-
-        _LOGGER.warning(
-            "RussoundZoneDevice init: zone_id=%s unique_id=%s zone_device_str=%s zone_name=%s",
-            zone_id,
-            self._attr_unique_id,
-            _zone.device_str,
-            getattr(_zone, "name", None),
-        )
 
     @property
     def _source(self) -> Source:

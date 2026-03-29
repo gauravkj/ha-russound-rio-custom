@@ -1,169 +1,131 @@
-"""The russound_rio component."""
+"""Switch platform for Russound RIO Enhanced."""
 
-import logging
+from __future__ import annotations
 
-import aiorussound.util as rs_util
-from aiorussound import RussoundClient, RussoundTcpConnectionHandler
-from aiorussound.models import CallbackType
+from collections.abc import Callable
+from dataclasses import dataclass
 
-try:
-    import aiorussound.rio as rs_rio
-except ImportError:
-    rs_rio = None
+from aiorussound import RussoundClient
+from aiorussound.models import RussoundZone
 
+from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_PORT, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, RUSSOUND_RIO_EXCEPTIONS
-
-PLATFORMS = [Platform.MEDIA_PLAYER, Platform.NUMBER, Platform.SWITCH]
-
-_LOGGER = logging.getLogger(__name__)
-
-type RussoundConfigEntry = ConfigEntry[RussoundClient]
-
-_original_get_max_zones = rs_util.get_max_zones
+from . import RussoundConfigEntry
+from .const import DOMAIN
+from .entity import RussoundZoneEntity
 
 
-def patched_get_max_zones(model: str) -> int:
-    """Patch zone counts for models not yet handled upstream."""
-    if model in ("SMZ16-PRE", "SMZ16"):
-        return 16
-    return _original_get_max_zones(model)
+@dataclass(frozen=True)
+class RussoundZoneSwitchDescription:
+    """Describe a Russound zone switch entity."""
+
+    key: str
+    name: str
+    icon: str
+    is_on_fn: Callable[[RussoundZone], bool]
+    turn_on_fn: Callable[[RussoundClient, int, int], object]
+    turn_off_fn: Callable[[RussoundClient, int, int], object]
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: RussoundConfigEntry) -> bool:
-    """Set up a config entry."""
+SWITCH_TYPES: tuple[RussoundZoneSwitchDescription, ...] = (
+    RussoundZoneSwitchDescription(
+        key="low_volume_boost",
+        name="Low Volume Boost",
+        icon="mdi:volume-plus",
+        is_on_fn=lambda zone: bool(zone.low_volume_boost),
+        turn_on_fn=lambda client, controller_id, zone_id: client.set_low_volume_boost(
+            controller_id, zone_id, True
+        ),
+        turn_off_fn=lambda client, controller_id, zone_id: client.set_low_volume_boost(
+            controller_id, zone_id, False
+        ),
+    ),
+    RussoundZoneSwitchDescription(
+        key="do_not_disturb",
+        name="Do Not Disturb",
+        icon="mdi:minus-circle-off",
+        is_on_fn=lambda zone: bool(zone.do_not_disturb),
+        turn_on_fn=lambda client, controller_id, zone_id: client.set_do_not_disturb(
+            controller_id, zone_id, True
+        ),
+        turn_off_fn=lambda client, controller_id, zone_id: client.set_do_not_disturb(
+            controller_id, zone_id, False
+        ),
+    ),
+)
 
-    host = entry.data[CONF_HOST]
-    port = entry.data[CONF_PORT]
-    client = RussoundClient(RussoundTcpConnectionHandler(host, port))
 
-    async def _connection_update_callback(
-        _client: RussoundClient, _callback_type: CallbackType
-    ) -> None:
-        """Call when the device is notified of changes."""
-        if _callback_type == CallbackType.CONNECTION:
-            if _client.is_connected():
-                _LOGGER.warning("Reconnected to device at %s", entry.data[CONF_HOST])
-            else:
-                _LOGGER.warning("Disconnected from device at %s", entry.data[CONF_HOST])
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up Russound switch entities from a config entry."""
+    russound_entry = entry
+    client: RussoundClient = russound_entry.runtime_data
 
-    await client.register_state_update_callbacks(_connection_update_callback)
-
-    try:
-        rs_util.get_max_zones = patched_get_max_zones
-        if rs_rio is not None and hasattr(rs_rio, "get_max_zones"):
-            rs_rio.get_max_zones = patched_get_max_zones
-
-        _LOGGER.warning(
-            "Patch check rs_util.get_max_zones('SMZ16-PRE')=%s",
-            rs_util.get_max_zones("SMZ16-PRE"),
-        )
-        if rs_rio is not None and hasattr(rs_rio, "get_max_zones"):
-            _LOGGER.warning(
-                "Patch check rs_rio.get_max_zones('SMZ16-PRE')=%s",
-                rs_rio.get_max_zones("SMZ16-PRE"),
-            )
-
-        await client.connect()
-        await client.load_zone_source_metadata()
-
-        _LOGGER.warning("Russound init controllers raw: %r", client.controllers)
-        _LOGGER.warning(
-            "Russound init controller ids: %s",
-            list(client.controllers.keys()) if client.controllers else [],
-        )
-        _LOGGER.warning(
-            "Russound init controller count: %s",
-            len(client.controllers) if client.controllers else 0,
-        )
-
-        for controller_id, controller in client.controllers.items():
-            _LOGGER.warning(
-                "Russound init controller %s object: %r",
-                controller_id,
-                controller,
-            )
-            _LOGGER.warning(
-                "Russound init controller %s zones raw: %r",
-                controller_id,
-                controller.zones,
-            )
-
-            try:
-                zone_keys = (
-                    list(controller.zones.keys())
-                    if controller.zones and hasattr(controller.zones, "keys")
-                    else list(controller.zones)
-                    if controller.zones
-                    else []
-                )
-            except Exception as err:
-                zone_keys = [f"<error reading zones: {err}>"]
-
-            _LOGGER.warning(
-                "Russound init controller %s zones keys: %s",
-                controller_id,
-                zone_keys,
-            )
-    except RUSSOUND_RIO_EXCEPTIONS as err:
-        raise ConfigEntryNotReady(
-            translation_domain=DOMAIN,
-            translation_key="entry_cannot_connect",
-            translation_placeholders={
-                "host": host,
-                "port": port,
-            },
-        ) from err
-
-    entry.runtime_data = client
-
-    device_registry = dr.async_get(hass)
+    entities: list[RussoundZoneSwitch] = []
 
     for controller_id, controller in client.controllers.items():
-        _device_identifier = (
-            controller.mac_address
-            or f"{client.controllers[1].mac_address}-{controller_id}"
+        for zone_id, zone in controller.zones.items():
+            for description in SWITCH_TYPES:
+                entities.append(
+                    RussoundZoneSwitch(
+                        russound_entry,
+                        controller_id,
+                        zone_id,
+                        description,
+                    )
+                )
+
+    async_add_entities(entities)
+
+
+class RussoundZoneSwitch(RussoundZoneEntity, SwitchEntity):
+    """Representation of a Russound zone switch."""
+
+    entity_description: RussoundZoneSwitchDescription
+
+    def __init__(
+        self,
+        entry: RussoundConfigEntry,
+        controller_id: int,
+        zone_id: int,
+        description: RussoundZoneSwitchDescription,
+    ) -> None:
+        """Initialize the switch."""
+        super().__init__(entry, controller_id, zone_id)
+        self.entity_description = description
+        self._attr_has_entity_name = True
+        self._attr_name = description.name
+        self._attr_icon = description.icon
+        self._attr_unique_id = (
+            f"{DOMAIN}_{controller_id}_{zone_id}_{description.key}"
         )
-        connections = None
-        via_device = None
-        configuration_url = None
-        if controller_id != 1:
-            assert client.controllers[1].mac_address
-            via_device = (
-                DOMAIN,
-                client.controllers[1].mac_address,
-            )
-        else:
-            assert controller.mac_address
-            connections = {(CONNECTION_NETWORK_MAC, controller.mac_address)}
-        if isinstance(client.connection_handler, RussoundTcpConnectionHandler):
-            configuration_url = f"http://{client.connection_handler.host}"
-        device_registry.async_get_or_create(
-            config_entry_id=entry.entry_id,
-            identifiers={(DOMAIN, _device_identifier)},
-            manufacturer="Russound",
-            name=controller.controller_type,
-            model=controller.controller_type,
-            sw_version=controller.firmware_version,
-            connections=connections,
-            via_device=via_device,
-            configuration_url=configuration_url,
+
+    @property
+    def is_on(self) -> bool:
+        """Return true if the switch is on."""
+        zone = self.zone
+        if zone is None:
+            return False
+        return self.entity_description.is_on_fn(zone)
+
+    async def async_turn_on(self, **kwargs) -> None:
+        """Turn the switch on."""
+        await self.entity_description.turn_on_fn(
+            self.client,
+            self.controller_id,
+            self.zone_id,
         )
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    return True
-
-
-async def async_unload_entry(hass: HomeAssistant, entry: RussoundConfigEntry) -> bool:
-    """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        await entry.runtime_data.disconnect()
-
-    return unload_ok
+    async def async_turn_off(self, **kwargs) -> None:
+        """Turn the switch off."""
+        await self.entity_description.turn_off_fn(
+            self.client,
+            self.controller_id,
+            self.zone_id,
+        )

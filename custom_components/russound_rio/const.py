@@ -20,7 +20,7 @@ RUSSOUND_RIO_EXCEPTIONS = (
 MBX_SOURCE_MODE_DEVICES: list[dict[str, object]] = [
     {
         "name": "House Streamer 2",
-        "host": "192.168.86.XX",  # replace with actual MBX-PRE IP
+        "host": "192.168.86.58",  # replace with actual MBX-PRE IP
         "port": 9621,  # confirm this is the correct RIO SE port
         "source_id": 3,  # replace with the actual controller source number
     },

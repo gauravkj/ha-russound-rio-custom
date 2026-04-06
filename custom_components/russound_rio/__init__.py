@@ -6,6 +6,7 @@ import logging
 
 import aiorussound.util as rs_util
 from aiorussound import RussoundClient, RussoundTcpConnectionHandler
+
 from .const import DOMAIN, MBX_SOURCE_MODE_DEVICES
 from .riose import MbxRioSeClient
 
@@ -58,6 +59,7 @@ def _apply_smz16_patch() -> None:
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the Russound RIO Enhanced integration."""
     _apply_smz16_patch()
+    hass.data.setdefault(DOMAIN, {})
     return True
 
 
@@ -81,7 +83,54 @@ async def async_setup_entry(
             f"Unable to connect to Russound controller at {host}:{port}"
         ) from err
 
+    mbx_clients: dict[str, MbxRioSeClient] = {}
+
+    for device in MBX_SOURCE_MODE_DEVICES:
+        name = str(device["name"])
+        mbx_host = str(device["host"])
+        mbx_port = int(device["port"])
+        source_id = int(device["source_id"])
+
+        mbx_client = MbxRioSeClient(
+            host=mbx_host,
+            port=mbx_port,
+            source_id=source_id,
+            name=name,
+        )
+
+        try:
+            await mbx_client.connect()
+            await mbx_client.initialize()
+            mbx_clients[name] = mbx_client
+            _LOGGER.info(
+                "Connected MBX RIO SE source client: %s (%s:%s, source_id=%s)",
+                name,
+                mbx_host,
+                mbx_port,
+                source_id,
+            )
+        except Exception as err:
+            _LOGGER.warning(
+                "Failed to connect MBX RIO SE source client %s at %s:%s: %s",
+                name,
+                mbx_host,
+                mbx_port,
+                err,
+            )
+
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN][entry.entry_id] = {
+        "controller_client": client,
+        "mbx_clients": mbx_clients,
+    }
+
     entry.runtime_data = client
+
+    if 1 in client.controllers:
+        _LOGGER.warning(
+            "Russound controller 1 zone count: %s",
+            len(client.controllers[1].zones),
+        )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
@@ -102,6 +151,18 @@ async def async_unload_entry(
             await client.disconnect()
         except Exception:
             _LOGGER.debug("Error while disconnecting Russound client", exc_info=True)
+
+    domain_data = hass.data.get(DOMAIN, {})
+    entry_data = domain_data.get(entry.entry_id, {})
+    mbx_clients: dict[str, MbxRioSeClient] = entry_data.get("mbx_clients", {})
+
+    for mbx_client in mbx_clients.values():
+        try:
+            await mbx_client.disconnect()
+        except Exception:
+            _LOGGER.debug("Error while disconnecting MBX RIO SE client", exc_info=True)
+
+    domain_data.pop(entry.entry_id, None)
 
     return unload_ok
 

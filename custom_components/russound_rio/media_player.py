@@ -20,13 +20,14 @@ from homeassistant.components.media_player import (
     MediaPlayerState,
     MediaType,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import RussoundConfigEntry, media_browser
 from .const import DOMAIN, RUSSOUND_MEDIA_TYPE_PRESET, SELECT_SOURCE_DELAY
 from .entity import RussoundBaseEntity, command
+from .riose import MbxRioSeClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,17 +43,27 @@ async def async_setup_entry(
     client = entry.runtime_data
     sources = client.sources
 
-    entities: list[RussoundZoneDevice] = []
+    entities: list[MediaPlayerEntity] = []
 
     for controller in client.controllers.values():
         zones = list(controller.zones) if controller.zones else []
         for zone_id in zones:
             entities.append(RussoundZoneDevice(controller, zone_id, sources))
 
+    mbx_clients: dict[str, MbxRioSeClient] = (
+        hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("mbx_clients", {})
+    )
+
+    entities.extend(
+        MbxSourceModeMediaPlayer(name, mbx_client)
+        for name, mbx_client in mbx_clients.items()
+    )
+
     async_add_entities(entities)
 
 
 def _parse_preset_source_id(media_id: str) -> tuple[int | None, int]:
+    """Parse optional source_id,preset_id media id format."""
     source_id = None
     if "," in media_id:
         source_id_str, preset_id_str = media_id.split(",", maxsplit=1)
@@ -141,12 +152,12 @@ class RussoundZoneDevice(RussoundBaseEntity, MediaPlayerEntity):
 
     @property
     def media_artist(self) -> str | None:
-        """Artist of current playing media, music track only."""
+        """Artist of current playing media."""
         return self._source.artist_name
 
     @property
     def media_album_name(self) -> str | None:
-        """Album name of current playing media, music track only."""
+        """Album name of current playing media."""
         return self._source.album_name
 
     @property
@@ -171,11 +182,7 @@ class RussoundZoneDevice(RussoundBaseEntity, MediaPlayerEntity):
 
     @property
     def volume_level(self) -> float:
-        """Volume level of the media player (0..1).
-
-        Value is returned based on a range (0..50).
-        Therefore float divide by 50 to get to the required range.
-        """
+        """Volume level of the media player (0..1)."""
         return self._zone.volume / 50.0
 
     @property
@@ -241,14 +248,11 @@ class RussoundZoneDevice(RussoundBaseEntity, MediaPlayerEntity):
         self, media_type: MediaType | str, media_id: str, **kwargs: Any
     ) -> None:
         """Play media on the Russound zone."""
-
         if media_type != RUSSOUND_MEDIA_TYPE_PRESET:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="unsupported_media_type",
-                translation_placeholders={
-                    "media_type": media_type,
-                },
+                translation_placeholders={"media_type": media_type},
             )
 
         try:
@@ -259,15 +263,18 @@ class RussoundZoneDevice(RussoundBaseEntity, MediaPlayerEntity):
                 translation_key="preset_non_integer",
                 translation_placeholders={"preset_id": media_id},
             ) from ve
+
         if source_id:
             await self._zone.select_source(source_id)
             await asyncio.sleep(SELECT_SOURCE_DELAY)
+
         if not self._source.presets or preset_id not in self._source.presets:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
                 translation_key="missing_preset",
                 translation_placeholders={"preset_id": media_id},
             )
+
         await self._zone.restore_preset(preset_id)
 
     async def async_browse_media(
@@ -279,3 +286,132 @@ class RussoundZoneDevice(RussoundBaseEntity, MediaPlayerEntity):
         return await media_browser.async_browse_media(
             self.hass, self._client, media_content_id, media_content_type, self._zone
         )
+
+
+class MbxSourceModeMediaPlayer(MediaPlayerEntity):
+    """Direct MBX-PRE Source Mode media player via RIO SE."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = MediaPlayerDeviceClass.SPEAKER
+
+    def __init__(self, name: str, client: MbxRioSeClient) -> None:
+        """Initialize MBX-PRE Source Mode entity."""
+        self._name = name
+        self._client = client
+        self._remove_listener = None
+
+        self._attr_name = name
+        self._attr_unique_id = f"mbx-riose-{client.host}-{client.source_id}"
+
+    async def async_added_to_hass(self) -> None:
+        """Register callbacks when entity is added."""
+
+        @callback
+        def _handle_update() -> None:
+            self.async_write_ha_state()
+
+        self._remove_listener = self._client.add_listener(_handle_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Cleanup callbacks when entity is removed."""
+        if self._remove_listener is not None:
+            self._remove_listener()
+            self._remove_listener = None
+
+    @property
+    def available(self) -> bool:
+        """Return availability."""
+        return self._client.is_connected
+
+    @property
+    def state(self) -> MediaPlayerState | None:
+        """Return current media player state."""
+        play_status = self._client.state.get("playStatus", "").upper()
+
+        if play_status in {"PLAYING", "PLAY"}:
+            return MediaPlayerState.PLAYING
+        if play_status in {"PAUSED", "PAUSE"}:
+            return MediaPlayerState.PAUSED
+        if play_status in {"STOPPED", "STOP"}:
+            return MediaPlayerState.IDLE
+
+        if self._client.state.get("songName") or self._client.state.get("artistName"):
+            return MediaPlayerState.PLAYING
+
+        return MediaPlayerState.IDLE
+
+    @property
+    def supported_features(self) -> MediaPlayerEntityFeature:
+        """Return supported features."""
+        return (
+            MediaPlayerEntityFeature.PAUSE
+            | MediaPlayerEntityFeature.NEXT_TRACK
+            | MediaPlayerEntityFeature.PREVIOUS_TRACK
+        )
+
+    @property
+    def media_title(self) -> str | None:
+        """Return current title."""
+        return (
+            self._client.state.get("songName")
+            or self._client.state.get("channelName")
+            or None
+        )
+
+    @property
+    def media_artist(self) -> str | None:
+        """Return current artist."""
+        return self._client.state.get("artistName") or None
+
+    @property
+    def media_album_name(self) -> str | None:
+        """Return current album."""
+        return self._client.state.get("albumName") or None
+
+    @property
+    def media_image_url(self) -> str | None:
+        """Return current cover art URL."""
+        return self._client.state.get("coverArtURL") or None
+
+    @property
+    def app_name(self) -> str | None:
+        """Return current app or mode."""
+        return self._client.state.get("mode") or None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Return extra attributes."""
+        return {
+            "mbx_host": self._client.host,
+            "source_id": self._client.source_id,
+            "protocol_version": self._client.protocol_version,
+            "play_status": self._client.state.get("playStatus"),
+            "available_controls": self._client.state.get("availableControls"),
+            "play_time": self._safe_int(self._client.state.get("playTime")),
+            "track_time": self._safe_int(self._client.state.get("trackTime")),
+            "playlist_name": self._client.state.get("playlistName"),
+            "channel_name": self._client.state.get("channelName"),
+            "mode": self._client.state.get("mode"),
+        }
+
+    async def async_media_pause(self) -> None:
+        """Pause or toggle pause."""
+        await self._client.pause_toggle()
+
+    async def async_media_previous_track(self) -> None:
+        """Previous track."""
+        await self._client.previous_track()
+
+    async def async_media_next_track(self) -> None:
+        """Next track."""
+        await self._client.next_track()
+
+    @staticmethod
+    def _safe_int(value: str | None) -> int | None:
+        """Safely parse int values."""
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            return None
